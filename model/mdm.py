@@ -151,7 +151,7 @@ class MDM(nn.Module):
         return clip_model
 
     def mask_cond(self, cond, force_mask=False):
-        bs = cond.shape[-2]
+        seq_len, bs, d = cond.shape
         if force_mask:
             return torch.zeros_like(cond)
         elif self.training and self.cond_mask_prob > 0.:
@@ -186,7 +186,7 @@ class MDM(nn.Module):
         mask = ~mask  # mask: True means no token there, we invert since the meaning of mask for transformer is inverted  https://pytorch.org/docs/stable/generated/torch.nn.MultiheadAttention.html
         return enc_text, mask
 
-    def forward(self, x, timesteps, y=None):
+    def _forward(self, x, timesteps, y):
         """
         x: [batch_size, njoints, nfeats, max_frames], denoted x_t in the paper
         timesteps: [batch_size] (int)
@@ -223,10 +223,7 @@ class MDM(nn.Module):
                 text_mask = torch.cat([torch.zeros_like(text_mask[:, 0:1]), text_mask], dim=1)
         if 'action' in self.cond_mode:
             action_emb = self.embed_action(y['action'])
-            emb = time_emb + self.mask_cond(action_emb, force_mask=force_mask)
-        if self.cond_mode == 'no_cond': 
-            # unconstrained
-            emb = time_emb
+            emb += self.mask_cond(action_emb, force_mask=force_mask)
 
         if self.arch == 'gru':
             x_reshaped = x.reshape(bs, njoints*nfeats, 1, nframes)
@@ -292,6 +289,22 @@ class MDM(nn.Module):
         super().train(*args, **kwargs)
         self.rot2xyz.smpl_model.train(*args, **kwargs)
 
+    def forward(self, x, timesteps, y=None):
+        """
+        x: [batch_size, njoints, nfeats, max_frames], denoted x_t in the paper
+        timesteps: [batch_size] (int)
+        """
+        print("-----------FORWARD MDM--------------")
+        return self._forward(x, timesteps, y)
+
+    def forward_onnx(self, x, timesteps, mask=None, lengths=None, scale=None, enc_text=None, text_mask=None):
+        """
+        x: [batch_size, njoints, nfeats, max_frames], denoted x_t in the paper
+        timesteps: [batch_size] (int)
+        """
+        print("-----------FORWARD MDM ONNX--------------")
+        y = {'mask': mask, 'lengths': lengths, 'scale': scale, 'text_embed': (enc_text, text_mask)}
+        return self._forward(x, timesteps, y)
 
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, dropout=0.1, max_len=5000):

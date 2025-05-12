@@ -24,14 +24,30 @@ class ClassifierFreeSampleModel(nn.Module):
         self.cond_mode = self.model.cond_mode
         self.encode_text = self.model.encode_text
 
+    def _forward(self, x, timesteps, y, y_uncond):
+        out = self.model(x, timesteps, y)
+        out_uncond = self.model(x, timesteps, y_uncond)
+        return out_uncond + (y['scale'].view(-1, 1, 1, 1) * (out - out_uncond))
+
     def forward(self, x, timesteps, y=None):
+        print("-----------FORWARD ClassifierFreeSampleModel-----------")
         cond_mode = self.model.cond_mode
         assert cond_mode in ['text', 'action']
         y_uncond = deepcopy(y)
         y_uncond['uncond'] = True
-        out = self.model(x, timesteps, y)
-        out_uncond = self.model(x, timesteps, y_uncond)
-        return out_uncond + (y['scale'].view(-1, 1, 1, 1) * (out - out_uncond))
+        return self._forward(x, timesteps, y, y_uncond)
+    
+    def forward_onnx(self, x, timesteps, y=None):
+        print("-----------FORWARD ClassifierFreeSampleModel ONNX-----------")
+        cond_mode = self.model.cond_mode
+        assert cond_mode in ['text', 'action']
+        y_uncond = {'mask': y['mask'].clone() if isinstance(y['mask'], torch.Tensor) else y['mask'], 
+                    'lengths': y['lengths'].clone() if isinstance(y['lengths'], torch.Tensor) else y['lengths'], 
+                    'scale': y['scale'].clone() if isinstance(y['scale'], torch.Tensor) else y['scale'], 
+                    'text_embed': (y['text_embed'][0].clone(), y['text_embed'][1].clone()) if isinstance(y['text_embed'], tuple) else y['text_embed'], 
+                    'uncond': True
+        }
+        return self._forward(x, timesteps, y, y_uncond)
 
     def __getattr__(self, name, default=None):
         # this method is reached only if name is not in self.__dict__.

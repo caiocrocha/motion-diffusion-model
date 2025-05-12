@@ -588,6 +588,55 @@ class GaussianDiffusion:
         sample = out["mean"] + nonzero_mask * th.exp(0.5 * out["log_variance"]) * noise
         return {"sample": sample, "pred_xstart": out["pred_xstart"].detach()}
 
+    def _p_sample_loop(
+        self,
+        model,
+        shape,
+        noise=None,
+        clip_denoised=True,
+        denoised_fn=None,
+        cond_fn=None,
+        model_kwargs=None,
+        device=None,
+        progress=False,
+        skip_timesteps=0,
+        init_image=None,
+        randomize_class=False,
+        cond_fn_with_grad=False,
+        dump_steps=None,
+        const_noise=False,
+    ):
+        final = None
+        if dump_steps is not None:
+            dump = []
+
+        if 'text' in model_kwargs['y'].keys():
+            # encoding once instead of each iteration saves lots of time
+            model_kwargs['y']['text_embed'] = model.encode_text(model_kwargs['y']['text'])
+        
+        for i, sample in enumerate(self.p_sample_loop_progressive(
+            model,
+            shape,
+            noise=noise,
+            clip_denoised=clip_denoised,
+            denoised_fn=denoised_fn,
+            cond_fn=cond_fn,
+            model_kwargs=model_kwargs,
+            device=device,
+            progress=progress,
+            skip_timesteps=skip_timesteps,
+            init_image=init_image,
+            randomize_class=randomize_class,
+            cond_fn_with_grad=cond_fn_with_grad,
+            const_noise=const_noise,
+        )):
+            if dump_steps is not None and i in dump_steps:
+                dump.append(deepcopy(sample["sample"]))
+            final = sample
+        if dump_steps is not None:
+            return dump
+        return final["sample"]
+
     def p_sample_loop(
         self,
         model,
@@ -626,36 +675,98 @@ class GaussianDiffusion:
         :param const_noise: If True, will noise all samples with the same noise throughout sampling
         :return: a non-differentiable batch of samples.
         """
-        final = None
-        if dump_steps is not None:
-            dump = []
-
-        if 'text' in model_kwargs['y'].keys():
-            # encoding once instead of each iteration saves lots of time
-            model_kwargs['y']['text_embed'] = model.encode_text(model_kwargs['y']['text'])
-        
-        for i, sample in enumerate(self.p_sample_loop_progressive(
+        return self._p_sample_loop(
             model,
             shape,
-            noise=noise,
-            clip_denoised=clip_denoised,
-            denoised_fn=denoised_fn,
-            cond_fn=cond_fn,
-            model_kwargs=model_kwargs,
-            device=device,
-            progress=progress,
-            skip_timesteps=skip_timesteps,
-            init_image=init_image,
-            randomize_class=randomize_class,
-            cond_fn_with_grad=cond_fn_with_grad,
-            const_noise=const_noise,
-        )):
-            if dump_steps is not None and i in dump_steps:
-                dump.append(deepcopy(sample["sample"]))
-            final = sample
-        if dump_steps is not None:
-            return dump
-        return final["sample"]
+            noise,
+            clip_denoised,
+            denoised_fn,
+            cond_fn,
+            model_kwargs,
+            device,
+            progress,
+            skip_timesteps,
+            init_image,
+            randomize_class,
+            cond_fn_with_grad,
+            dump_steps,
+            const_noise,
+        )
+
+    def p_sample_loop_onnx(
+        self,
+        model,
+        batch_size=None,
+        njoints=None,
+        nfeats=None,
+        n_frames=None,
+        noise=None,
+        clip_denoised=True,
+        denoised_fn=None,
+        cond_fn=None,
+        mask=None,
+        lengths=None,
+        text=None,
+        tokens=None,
+        scale=None,
+        enc_text=None,
+        text_mask=None,
+        device=None,
+        progress=False,
+        skip_timesteps=0,
+        init_image=None,
+        randomize_class=False,
+        cond_fn_with_grad=False,
+        dump_steps=None,
+        const_noise=False,
+    ):
+        """
+        Generate samples from the model.
+
+        :param model: the model module.
+        :param shape: the shape of the samples, (N, C, H, W).
+        :param noise: if specified, the noise from the encoder to sample.
+                      Should be of the same shape as `shape`.
+        :param clip_denoised: if True, clip x_start predictions to [-1, 1].
+        :param denoised_fn: if not None, a function which applies to the
+            x_start prediction before it is used to sample.
+        :param cond_fn: if not None, this is a gradient function that acts
+                        similarly to the model.
+        :param model_kwargs: if not None, a dict of extra keyword arguments to
+            pass to the model. This can be used for conditioning.
+        :param device: if specified, the device to create the samples on.
+                       If not specified, use a model parameter's device.
+        :param progress: if True, show a tqdm progress bar.
+        :param const_noise: If True, will noise all samples with the same noise throughout sampling
+        :return: a non-differentiable batch of samples.
+        """
+        model_kwargs = {'y': {
+            'mask': mask, 
+            'lengths': lengths, 
+            # 'text': text, 
+            # 'tokens': tokens,
+            'scale': scale,
+            'text_embed': (enc_text, text_mask)
+            }
+        }
+        shape = (batch_size, njoints, nfeats, n_frames)
+        return self._p_sample_loop(
+            model,
+            shape,
+            noise,
+            clip_denoised,
+            denoised_fn,
+            cond_fn,
+            model_kwargs,
+            device,
+            progress,
+            skip_timesteps,
+            init_image,
+            randomize_class,
+            cond_fn_with_grad,
+            dump_steps,
+            const_noise,
+        )
 
     def p_sample_loop_progressive(
         self,

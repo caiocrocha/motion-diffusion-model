@@ -19,8 +19,34 @@ import shutil
 from data_loaders.tensors import collate
 from moviepy.editor import clips_array
 
+def load_model_and_diffusion(args, data, n_frames):
+    print("Creating model and diffusion...")
+    model, diffusion = create_model_and_diffusion(args, data)
 
-def main(args=None):
+    sample_fn = diffusion.p_sample_loop
+    if args.autoregressive:
+        sample_cls = AutoRegressiveSampler(args, sample_fn, n_frames)
+        sample_fn = sample_cls.sample
+
+    print(f"Loading checkpoints from [{args.model_path}]...")
+    load_saved_model(model, args.model_path, use_avg=args.use_ema)
+
+    if args.guidance_param != 1:
+        model = ClassifierFreeSampleModel(model)   # wrapping model with the classifier-free sampler
+    model.to(dist_util.dev())
+    model.eval()  # disable random masking
+
+    motion_shape = (args.batch_size, model.njoints, model.nfeats, n_frames)
+    print(f"Motion shape: {motion_shape}")
+    return model, diffusion, motion_shape, sample_fn
+
+def get_n_frames(args):
+    max_frames = 196 if args.dataset in ['kit', 'humanml'] else 60
+    fps = 12.5 if args.dataset == 'kit' else 20
+    n_frames = min(max_frames, int(args.motion_length*fps))
+    return max_frames, fps, n_frames
+
+def main(args=None, load_data=True):
     if args is None:
         # args is None unless this method is called from another function (e.g. during training)
         args = generate_args()
@@ -29,9 +55,7 @@ def main(args=None):
     n_joints = 22 if args.dataset == 'humanml' else 21
     name = os.path.basename(os.path.dirname(args.model_path))
     niter = os.path.basename(args.model_path).replace('model', '').replace('.pt', '')
-    max_frames = 196 if args.dataset in ['kit', 'humanml'] else 60
-    fps = 12.5 if args.dataset == 'kit' else 20
-    n_frames = min(max_frames, int(args.motion_length*fps))
+    max_frames, fps, n_frames = get_n_frames(args)
     is_using_data = not any([args.input_text, args.text_prompt, args.action_file, args.action_name])
     if args.context_len > 0:
         is_using_data = True  # For prefix completion, we need to sample a prefix
@@ -76,26 +100,10 @@ def main(args=None):
     args.batch_size = args.num_samples  # Sampling a single batch from the testset, with exactly args.num_samples
 
     print('Loading dataset...')
-    data = load_dataset(args, max_frames, n_frames)
+    data = load_dataset(args, max_frames, n_frames) if load_data else None
     total_num_samples = args.num_samples * args.num_repetitions
 
-    print("Creating model and diffusion...")
-    model, diffusion = create_model_and_diffusion(args, data)
-
-    sample_fn = diffusion.p_sample_loop
-    if args.autoregressive:
-        sample_cls = AutoRegressiveSampler(args, sample_fn, n_frames)
-        sample_fn = sample_cls.sample
-
-    print(f"Loading checkpoints from [{args.model_path}]...")
-    load_saved_model(model, args.model_path, use_avg=args.use_ema)
-
-    if args.guidance_param != 1:
-        model = ClassifierFreeSampleModel(model)   # wrapping model with the classifier-free sampler
-    model.to(dist_util.dev())
-    model.eval()  # disable random masking
-
-    motion_shape = (args.batch_size, model.njoints, model.nfeats, n_frames)
+    model, diffusion, motion_shape, sample_fn = load_model_and_diffusion(args, data, n_frames)
 
     if is_using_data:
         iterator = iter(data)
