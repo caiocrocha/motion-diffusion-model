@@ -1,5 +1,61 @@
 # MDM: Human Motion Diffusion Model
 
+## ONNX exportation
+
+### Why?
+ONNX enables model interoperability between frameworks, allowing conversion from PyTorch to an optimized universal format that can be run in any compatible platform.
+
+### Changes
+
+I split the code inside the **main** function in _sample/generate.py_ into smaller functions that I could import in my conversion script. 
+
+_convert\_pt\_to\_onnx.py_ creates a wrapper for the Diffusion + MDM models that runs the generation pipeline given any text prompt. Inside the **export\_mdm\_to\_onnx** function, the dummy_input tuple is created with only torch Tensors, which are the required inputs used to trace the model.
+
+ONNX runs the MDM wrapper twice, calling internally the forward function with dummy\_inputs as the arguments. The reason why I unfolded the dictionary _y_ otherwise passed as optional argument to the **ClassifierFreeSampleModel** and **MDM** forward calls is that ONNX raises an exception when trying to infer the input type of a dict, as it expects the forward arguments to be either tensors or tuples of tensors.
+
+The **AutoRegressiveSampler** class is not used for the ONNX exportation.
+
+### Steps
+
+1. The code retrieves text prompts and calculates the number of frames (n_frames) based on the command line arguments.
+
+2. It initializes the motion generation model and diffusion process. It loads the MDM model checkpoint, wraps it around a classifier-free guidance class, and sets the model to evaluation mode. The difference is that the classifier-free guidance forward function calls the MDM forward function twice per diffusion step, once with conditional inputs and once without conditional inputs. 
+
+3. The code encodes the text prompts into embeddings using MDM's **encode_text** method.
+
+4. It initializes a random tensor x (the starting point for diffusion) and prepares a dictionary y containing:
+
+    - A mask for valid frames.
+
+    - The number of frames (lengths).
+
+    - The guidance scale (scale).
+
+    - The encoded text embeddings (text_embed).
+
+    which is then expanded into the dummy_inputs variable for ONNX compatibility.
+
+5. The **export_mdm_to_onnx** creates the MDM wrapper and runs **torch.onnx.export** to convert it into the ONNX format. It specifies input/output names, dynamic axes for variable dimensions (e.g., batch size, sequence length), and the ONNX opset version (17), which is the highest I could set given my torch + ONNX installed versions. I had to implement the Transformer's logical not operator since it was not yet supported in ONNX opset 17.
+
+6. The **torch.onnx.export** function runs the MDM wrapper forward function, which calls the **p_sample_loop_onnx** method implemented in _diffusion/gaussian_diffusion.py_. During generation, the entire motion sequence (all frames) is denoised together at each diffusion timestep, starting from random noise of shape (batch_size, joints, features, frames). Each diffusion timestep calls the MDM forward function that predicts the entire sequence at once, generating in the end a coherent motion.
+
+### Issues
+
+* The current implementation of the diffusion loop is not optimized for ONNX, making it very costly as the number of diffusion steps increases (e.g. 1 minute for 3 steps, 5 minutes for 5 steps, 15 minutes for 10 steps, etc.). I couldn't export the model with 50 steps. If you want to overwrite the number of diffusion steps, you may add `args.diffusion_steps = 5 # overwrite diffusion steps` to the first line of the **create\_gaussian\_diffusion** function inside _utils/model\_util.py_.
+
+* The ONNX outputs are not exactly the same as the torch outputs, which causes the _test_onnx_model.py_ script to raise an AssertionError because the maximum diffeference between vector representations exceeds an arbitrary threshold (1e-05). I think this is due to the internal representation of the model in ONNX and to floating point truncation, but it could also be that my implementation of the ONNX conversion has a bug.
+
+* I haven't adapted yet the visualization script to the _test\_onnx\_model.py_ script, therefore the ONNX model outputs aren't saved.
+
+### Examples
+
+```python -m convert_pt_to_onnx --model_path ./save/humanml_trans_dec_512_bert/model000200000.pt --num_samples=1 --num_repetitions=1 --seed=4 --batch_size=1 --diffusion_steps=5 --text_prompt="A person walks"
+```
+
+```python -m test_onnx_model --model_path ./save/humanml_trans_dec_512_bert/model000200000.pt --text_prompt="A person kicks a soccer ball with their right foot" --num_samples=1 --num_repetitions=1 --seed=4
+```
+
+## Original README
 
 [![arXiv](https://img.shields.io/badge/arXiv-<2209.14916>-<COLOR>.svg)](https://arxiv.org/abs/2209.14916)
 <a href="https://replicate.com/arielreplicate/motion_diffusion_model"><img src="https://replicate.com/arielreplicate/motion_diffusion_model/badge"></a>
@@ -68,7 +124,6 @@ DiP and CLoSD:
 📢 **12/Feb/25** - Added many things:
   * [The DiP model](DiP.md)
   * MDM with DistilBERT text encoder (Add `--text_encoder_type bert`)
-    * Developed by the legendary [Roy Kapon](https://scholar.google.com/citations?user=FAQOuSgAAAAJ&hl=en)!
   * `--gen_during_training` feature.
   * `--mask_frames` bug fix.
   * `--use_ema` Weight averaging using Exponential Moving Average.
@@ -102,8 +157,6 @@ DiP and CLoSD:
 
 
 ## Checkout MDM Follow-ups (partial list)
-
-🐔 [LoRA-MDM](https://haimsaw.github.io/LoRA-MDM/) - Promptly adapt MDM for stylized text-to-motion.
 
 🦩 [AnyTop](https://anytop2025.github.io/Anytop-page/) - Character Animation Diffusion with Any Topology.
 
@@ -149,8 +202,14 @@ pip install git+https://github.com/openai/CLIP.git
 
 Download dependencies:
 
+**Text to Motion** 
+
+[Download HumanML3D](https://drive.google.com/drive/folders/1OZrTlAGRvLjXhXwnRiOC-oxYry1vf-Uu?usp=drive_link)
+
+Or, alternatively, parse the data yourself according to the original instructions:
+
 <details>
-  <summary><b>Text to Motion</b></summary>
+  <summary><b>Original Text to Motion Instructions</b></summary>
 
 ```bash
 bash prepare/download_smpl_files.sh
@@ -180,15 +239,8 @@ bash prepare/download_recognition_unconstrained_models.sh
 
 ### 2. Get data
 
-**Text to Motion** 
-
-[Download HumanML3D](https://drive.google.com/drive/folders/1OZrTlAGRvLjXhXwnRiOC-oxYry1vf-Uu?usp=drive_link)
-
-Or, alternatively, parse the data yourself according to the original instructions:
-
-
 <details>
-  <summary><b>Original Text to Motion instructions</b></summary>
+  <summary><b>Text to Motion</b></summary>
 
 There are two paths to get the data:
 
