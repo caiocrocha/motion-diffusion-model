@@ -3,10 +3,11 @@
 
 import torch
 from torch import nn
-from sample.generate import load_model_and_diffusion, get_n_frames
+from sample.generate import load_model_and_diffusion, load_text
 from utils.parser_util import generate_args
 from utils import dist_util
 from utils.fixseed import fixseed
+import numpy as np
 
 def my_logical_not_function(g, input):
     """
@@ -72,10 +73,10 @@ def export_mdm_to_onnx(model, sample_fn, diffusion, save_path, motion_shape, mas
     wrapper.eval()
     
     batch_size, njoints, nfeats, n_frames = motion_shape
-    batch_size = torch.tensor(batch_size).to(dist_util.dev())
-    njoints = torch.tensor(njoints).to(dist_util.dev())
-    nfeats = torch.tensor(nfeats).to(dist_util.dev())
-    n_frames = torch.tensor(n_frames).to(dist_util.dev())
+    batch_size = torch.tensor([batch_size]).to(dist_util.dev())
+    njoints = torch.tensor([njoints]).to(dist_util.dev())
+    nfeats = torch.tensor([nfeats]).to(dist_util.dev())
+    n_frames = torch.tensor([n_frames]).to(dist_util.dev())
     dummy_input = (batch_size, njoints, nfeats, n_frames, mask, lengths, scale, enc_text, text_mask)
 
     torch.onnx.export(
@@ -83,28 +84,44 @@ def export_mdm_to_onnx(model, sample_fn, diffusion, save_path, motion_shape, mas
         dummy_input,
         save_path,
         input_names=['batch_size', 'njoints', 'nfeats', 'n_frames', 
-        'mask', 'lengths', 'text', 'scale', 'enc_text', 'text_mask'],
+                     'mask', 'lengths', 'scale', 'enc_text', 'text_mask'],
         output_names=['output'],
-        opset_version=17
+        dynamic_axes={
+            'mask': {0: 'batch_size', 3: 'n_frames'},
+            'enc_text': {0: 'sequence_length'},
+            'text_mask': {1: 'sequence_length'}
+        },
+        opset_version=17,
+        verbose=False
     )
 
 def main(args=None):
+    # Set seeds for reproducibility
+    torch.manual_seed(42)
+    np.random.seed(42)
+
     if args is None:
         # args is None unless this method is called from another function (e.g. during training)
         args = generate_args()
     fixseed(args.seed)
-    max_frames, fps, n_frames = get_n_frames(args)
     dist_util.setup_dist(args.device)
+    texts, action_text, n_frames, max_frames, fps = load_text(args)
     args.batch_size = args.num_samples  # Sampling a single batch from the testset, with exactly args.num_samples
     model, diffusion, motion_shape, sample_fn = load_model_and_diffusion(args, data=None, n_frames=n_frames)
 
+    scale = torch.ones(args.batch_size, device=dist_util.dev()) * args.guidance_param
+
+    text_embed = model.encode_text(texts)
+    enc_text, text_mask = text_embed
+
     x = torch.randn(*motion_shape).to(dist_util.dev())
     timesteps = torch.tensor([0]).to(dist_util.dev())
+    batch_size = args.batch_size
     y = {
-        'mask': torch.ones((1, 1, 1, n_frames), dtype=torch.bool).to(dist_util.dev()),
+        'mask': torch.ones((batch_size, 1, 1, n_frames), dtype=torch.bool).to(dist_util.dev()),
         'lengths': torch.tensor([n_frames]).to(dist_util.dev()),
-        'scale': torch.tensor([7.5]).to(dist_util.dev()),
-        'text_embed': (torch.randn(6, 1, 768).to(dist_util.dev()), torch.ones((1, 6), dtype=torch.bool).to(dist_util.dev()))
+        'scale': scale.to(dist_util.dev()),
+        'text_embed': (enc_text.to(dist_util.dev()), text_mask.to(dist_util.dev()))
     }
 
     dummy_input = (x, timesteps, y['mask'], y['lengths'], y['scale'], y['text_embed'][0], y['text_embed'][1])
@@ -112,7 +129,7 @@ def main(args=None):
 
     export_path = args.model_path.replace('.pt', '_onnx.onnx')
     export_mdm_to_onnx(model, sample_fn, diffusion, export_path, motion_shape, 
-    y['mask'], y['lengths'], y['scale'], y['text_embed'][0], y['text_embed'][1])
+                       y['mask'], y['lengths'], y['scale'], y['text_embed'][0], y['text_embed'][1])
     print(f"Exported model to {export_path}")
 
 if __name__ == '__main__':

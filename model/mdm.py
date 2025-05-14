@@ -294,7 +294,6 @@ class MDM(nn.Module):
         x: [batch_size, njoints, nfeats, max_frames], denoted x_t in the paper
         timesteps: [batch_size] (int)
         """
-        print("-----------FORWARD MDM--------------")
         return self._forward(x, timesteps, y)
 
     def forward_onnx(self, x, timesteps, mask=None, lengths=None, scale=None, enc_text=None, text_mask=None):
@@ -302,7 +301,6 @@ class MDM(nn.Module):
         x: [batch_size, njoints, nfeats, max_frames], denoted x_t in the paper
         timesteps: [batch_size] (int)
         """
-        print("-----------FORWARD MDM ONNX--------------")
         y = {'mask': mask, 'lengths': lengths, 'scale': scale, 'text_embed': (enc_text, text_mask)}
         return self._forward(x, timesteps, y)
 

@@ -30,7 +30,6 @@ class ClassifierFreeSampleModel(nn.Module):
         return out_uncond + (y['scale'].view(-1, 1, 1, 1) * (out - out_uncond))
 
     def forward(self, x, timesteps, y=None):
-        print("-----------FORWARD ClassifierFreeSampleModel-----------")
         cond_mode = self.model.cond_mode
         assert cond_mode in ['text', 'action']
         y_uncond = deepcopy(y)
@@ -38,7 +37,6 @@ class ClassifierFreeSampleModel(nn.Module):
         return self._forward(x, timesteps, y, y_uncond)
     
     def forward_onnx(self, x, timesteps, y=None):
-        print("-----------FORWARD ClassifierFreeSampleModel ONNX-----------")
         cond_mode = self.model.cond_mode
         assert cond_mode in ['text', 'action']
         y_uncond = {'mask': y['mask'].clone() if isinstance(y['mask'], torch.Tensor) else y['mask'], 

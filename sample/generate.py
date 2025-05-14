@@ -37,41 +37,15 @@ def load_model_and_diffusion(args, data, n_frames):
     model.eval()  # disable random masking
 
     motion_shape = (args.batch_size, model.njoints, model.nfeats, n_frames)
-    print(f"Motion shape: {motion_shape}")
     return model, diffusion, motion_shape, sample_fn
 
-def get_n_frames(args):
+def load_text(args):
     max_frames = 196 if args.dataset in ['kit', 'humanml'] else 60
     fps = 12.5 if args.dataset == 'kit' else 20
     n_frames = min(max_frames, int(args.motion_length*fps))
-    return max_frames, fps, n_frames
 
-def main(args=None, load_data=True):
-    if args is None:
-        # args is None unless this method is called from another function (e.g. during training)
-        args = generate_args()
-    fixseed(args.seed)
-    out_path = args.output_dir
-    n_joints = 22 if args.dataset == 'humanml' else 21
-    name = os.path.basename(os.path.dirname(args.model_path))
-    niter = os.path.basename(args.model_path).replace('model', '').replace('.pt', '')
-    max_frames, fps, n_frames = get_n_frames(args)
-    is_using_data = not any([args.input_text, args.text_prompt, args.action_file, args.action_name])
-    if args.context_len > 0:
-        is_using_data = True  # For prefix completion, we need to sample a prefix
-    dist_util.setup_dist(args.device)
-    if out_path == '':
-        out_path = os.path.join(os.path.dirname(args.model_path),
-                                'samples_{}_{}_seed{}'.format(name, niter, args.seed))
-        if args.text_prompt != '':
-            out_path += '_' + args.text_prompt.replace(' ', '_').replace('.', '')
-        elif args.input_text != '':
-            out_path += '_' + os.path.basename(args.input_text).replace('.txt', '').replace(' ', '_').replace('.', '')
-        elif args.dynamic_text_path != '':
-            out_path += '_' + os.path.basename(args.dynamic_text_path).replace('.txt', '').replace(' ', '_').replace('.', '')
-
-    # this block must be called BEFORE the dataset is loaded
     texts = None
+    action_text = None
     if args.text_prompt != '':
         texts = [args.text_prompt] * args.num_samples
     elif args.input_text != '':
@@ -98,7 +72,34 @@ def main(args=None, load_data=True):
         args.num_samples = len(action_text)
 
     args.batch_size = args.num_samples  # Sampling a single batch from the testset, with exactly args.num_samples
+    return texts, action_text, n_frames, max_frames, fps
 
+def main(args=None, load_data=True):
+    if args is None:
+        # args is None unless this method is called from another function (e.g. during training)
+        args = generate_args()
+    fixseed(args.seed)
+    out_path = args.output_dir
+    n_joints = 22 if args.dataset == 'humanml' else 21
+    name = os.path.basename(os.path.dirname(args.model_path))
+    niter = os.path.basename(args.model_path).replace('model', '').replace('.pt', '')
+    is_using_data = not any([args.input_text, args.text_prompt, args.action_file, args.action_name])
+    if args.context_len > 0:
+        is_using_data = True  # For prefix completion, we need to sample a prefix
+    dist_util.setup_dist(args.device)
+    if out_path == '':
+        out_path = os.path.join(os.path.dirname(args.model_path),
+                                'samples_{}_{}_seed{}'.format(name, niter, args.seed))
+        if args.text_prompt != '':
+            out_path += '_' + args.text_prompt.replace(' ', '_').replace('.', '')
+        elif args.input_text != '':
+            out_path += '_' + os.path.basename(args.input_text).replace('.txt', '').replace(' ', '_').replace('.', '')
+        elif args.dynamic_text_path != '':
+            out_path += '_' + os.path.basename(args.dynamic_text_path).replace('.txt', '').replace(' ', '_').replace('.', '')
+
+    # this block must be called BEFORE the dataset is loaded
+    texts, action_text, n_frames, max_frames, fps = load_text(args)
+    
     print('Loading dataset...')
     data = load_dataset(args, max_frames, n_frames) if load_data else None
     total_num_samples = args.num_samples * args.num_repetitions
