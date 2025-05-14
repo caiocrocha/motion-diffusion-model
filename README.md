@@ -49,10 +49,12 @@ The **AutoRegressiveSampler** class is not used for the ONNX exportation.
 
 ### Examples
 
-```python -m convert_pt_to_onnx --model_path ./save/humanml_trans_dec_512_bert/model000200000.pt --num_samples=1 --num_repetitions=1 --seed=4 --batch_size=1 --diffusion_steps=5 --text_prompt="A person walks"
+```shell
+python -m convert_pt_to_onnx --model_path ./save/humanml_trans_dec_512_bert/model000200000.pt --text_prompt="A person walks" --num_samples=1 --num_repetitions=1 --seed=4
 ```
 
-```python -m test_onnx_model --model_path ./save/humanml_trans_dec_512_bert/model000200000.pt --text_prompt="A person kicks a soccer ball with their right foot" --num_samples=1 --num_repetitions=1 --seed=4
+```shell
+python -m test_onnx_model --model_path ./save/humanml_trans_dec_512_bert/model000200000.pt --text_prompt="A person kicks a soccer ball with their right foot" --num_samples=1 --num_repetitions=1 --seed=4
 ```
 
 ## Original README
