@@ -19,6 +19,8 @@ from data_loaders.humanml.scripts import motion_process
 from utils.loss_util import masked_l2, masked_goal_l2
 from data_loaders.humanml.scripts.motion_process import get_target_location
 
+from typing import List, Callable
+
 def get_named_beta_schedule(schedule_name, num_diffusion_timesteps, scale_betas=1.):
     """
     Get a pre-defined beta schedule for the given name.
@@ -750,23 +752,38 @@ class GaussianDiffusion:
             }
         }
         shape = (batch_size, njoints, nfeats, n_frames)
-        return self._p_sample_loop(
-            model,
-            shape,
-            noise,
-            clip_denoised,
-            denoised_fn,
-            cond_fn,
-            model_kwargs,
-            device,
-            progress,
-            skip_timesteps,
-            init_image,
-            randomize_class,
-            cond_fn_with_grad,
-            dump_steps,
-            const_noise,
-        )
+
+        if device is None:
+            device = next(model.parameters()).device
+        assert isinstance(shape, (tuple, list))
+        if noise is not None:
+            img = noise
+        else:
+            img = th.randn(*shape, device=device)
+
+        if skip_timesteps and init_image is None:
+            init_image = th.zeros_like(img)
+
+        indices = list(range(self.num_timesteps - skip_timesteps))[::-1]
+
+        if init_image is not None:
+            my_t = th.ones([shape[0]], device=device, dtype=th.long) * indices[0]
+            img = self.q_sample(init_image, my_t, img)
+
+        sample_fn = self.p_sample
+        sample_fn_lbd = lambda x, t: sample_fn(model, x, t, clip_denoised, denoised_fn, cond_fn, model_kwargs, const_noise)
+
+        img = GaussianDiffusion.p_sample_loop_jit(indices, img, sample_fn_lbd)
+        return img
+
+    @staticmethod
+    @torch.jit.script
+    def p_sample_loop_jit(indices: List[int], img: torch.Tensor, sample_fn_lbd: Callable):
+        for i in indices:
+            t = th.tensor([i] * img.shape[0], device=img.device)
+            out = sample_fn_lbd(img, t)
+            img = out["sample"]
+        return img
 
     def p_sample_loop_progressive(
         self,
