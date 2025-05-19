@@ -115,6 +115,51 @@ class SpacedDiffusion(GaussianDiffusion):
         return t
 
 
+class SpacedDiffusionONNX(SpacedDiffusion):
+    """
+    A diffusion process which can skip steps in a base diffusion process.
+
+    :param use_timesteps: a collection (sequence or set) of timesteps from the
+                          original diffusion process to retain.
+    :param kwargs: the kwargs to create the base diffusion process.
+    """
+
+    def __init__(self, model, **kwargs):
+        """
+        :param model: either an instance of MDM or a wrapper, or a cond_fn
+        """
+        print(f"Calling SpacedDiffusionONNX with model")
+        super().__init__(**kwargs)
+        print("Called super().__init__")
+        self.model = model
+        self.model.forward = self.model.forward_onnx
+    
+    def forward(self, *args, **kwargs):
+        print("-----------FORWARD SpacedDiffusionONNX-----------")
+        print(f"args: {args}")
+        print(f"kwargs: {kwargs}")
+        return self.p_sample_loop_onnx(self._wrap_model(self.model), *args, **kwargs)
+
+    def p_mean_variance(
+        self, *args, **kwargs
+        
+    ):  # pylint: disable=signature-differs
+        print("-----------p_mean_variance SpacedDiffusionONNX-----------")
+        print(f"args: {args}")
+        print(f"kwargs: {kwargs}")
+        return super().p_mean_variance(*args, **kwargs)
+
+    def training_losses(
+        self, *args, **kwargs
+    ):  # pylint: disable=signature-differs
+        return super().training_losses(self._wrap_model(self.model), *args, **kwargs)
+
+    def condition_mean(self, *args, **kwargs):
+        return super().condition_mean(self._wrap_model(self.model), *args, **kwargs)
+
+    def condition_score(self, *args, **kwargs):
+        return super().condition_score(self._wrap_model(self.model), *args, **kwargs)
+
 class _WrappedModel:
     def __init__(self, model, timestep_map, rescale_timesteps, original_num_steps):
         self.model = model
@@ -123,6 +168,7 @@ class _WrappedModel:
         self.original_num_steps = original_num_steps
 
     def __call__(self, x, ts, **kwargs):
+        print("Calling _WrappedModel")
         map_tensor = th.tensor(self.timestep_map, device=ts.device, dtype=ts.dtype)
         new_ts = map_tensor[ts]
         if self.rescale_timesteps:

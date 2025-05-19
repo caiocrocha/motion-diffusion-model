@@ -1,7 +1,7 @@
 import torch
 from model.mdm import MDM
 from diffusion import gaussian_diffusion as gd
-from diffusion.respace import SpacedDiffusion, space_timesteps
+from diffusion.respace import SpacedDiffusion, SpacedDiffusionONNX, space_timesteps
 from utils.parser_util import get_cond_mode
 from data_loaders.humanml_utils import HML_EE_JOINT_NAMES
 
@@ -17,7 +17,7 @@ def load_model_wo_clip(model, state_dict):
 
 def create_model_and_diffusion(args, data):
     model = MDM(**get_model_args(args, data))
-    diffusion = create_gaussian_diffusion(args)
+    diffusion = create_gaussian_diffusion(args, onnx=False, model=model)
     return model, diffusion
 
 
@@ -72,10 +72,12 @@ def get_model_args(args, data):
 
 
 
-def create_gaussian_diffusion(args):
+def create_gaussian_diffusion(args, onnx, model):
     # default params
     predict_xstart = True  # we always predict x_start (a.k.a. x0), that's our deal!
+    args.diffusion_steps = 2 # overwrite diffusion steps
     steps = args.diffusion_steps
+    print(f"Diffusion steps: {steps}")
     scale_beta = 1.  # no scaling
     timestep_respacing = ''  # can be used for ddim sampling, we don't use it.
     learn_sigma = False
@@ -91,6 +93,31 @@ def create_gaussian_diffusion(args):
         lambda_target_loc = args.lambda_target_loc
     else:
         lambda_target_loc = 0.
+
+    if onnx:
+        return SpacedDiffusionONNX(
+            model=model,
+            use_timesteps=space_timesteps(steps, timestep_respacing),
+            betas=betas,
+            model_mean_type=(
+                gd.ModelMeanType.EPSILON if not predict_xstart else gd.ModelMeanType.START_X
+            ),
+            model_var_type=(
+                (
+                    gd.ModelVarType.FIXED_LARGE
+                    if not args.sigma_small
+                    else gd.ModelVarType.FIXED_SMALL
+                )
+                if not learn_sigma
+                else gd.ModelVarType.LEARNED_RANGE
+            ),
+            loss_type=loss_type,
+            rescale_timesteps=rescale_timesteps,
+            lambda_vel=args.lambda_vel,
+            lambda_rcxyz=args.lambda_rcxyz,
+            lambda_fc=args.lambda_fc,
+            lambda_target_loc=lambda_target_loc,
+        )
 
     return SpacedDiffusion(
         use_timesteps=space_timesteps(steps, timestep_respacing),

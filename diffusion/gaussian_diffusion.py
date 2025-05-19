@@ -12,14 +12,13 @@ import math
 import numpy as np
 import torch
 import torch as th
+import torch.nn as nn
 from copy import deepcopy
 from diffusion.nn import mean_flat, sum_flat
 from diffusion.losses import normal_kl, discretized_gaussian_log_likelihood
 from data_loaders.humanml.scripts import motion_process
 from utils.loss_util import masked_l2, masked_goal_l2
 from data_loaders.humanml.scripts.motion_process import get_target_location
-
-from typing import List, Callable
 
 def get_named_beta_schedule(schedule_name, num_diffusion_timesteps, scale_betas=1.):
     """
@@ -104,7 +103,7 @@ class LossType(enum.Enum):
         return self == LossType.KL or self == LossType.RESCALED_KL
 
 
-class GaussianDiffusion:
+class GaussianDiffusion(nn.Module):
     """
     Utilities for training and sampling diffusion models.
 
@@ -141,6 +140,7 @@ class GaussianDiffusion:
         lambda_target_loc=0.,
         **kargs,
     ):
+        super().__init__()
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
         self.loss_type = loss_type
@@ -292,6 +292,7 @@ class GaussianDiffusion:
                  - 'log_variance': the log of 'variance'.
                  - 'pred_xstart': the prediction for x_0.
         """
+        print("p_mean_variance")
         if model_kwargs is None:
             model_kwargs = {}
 
@@ -381,6 +382,11 @@ class GaussianDiffusion:
             "log_variance": model_log_variance,
             "pred_xstart": pred_xstart,
         }
+
+    def p_mean_variance_onnx(
+        self, model, x, t, kwargs=None
+    ):
+        return self.p_mean_variance(model, x, t, **kwargs)
 
     def _predict_xstart_from_eps(self, x_t, t, eps):
         assert x_t.shape == eps.shape
@@ -516,6 +522,7 @@ class GaussianDiffusion:
                  - 'sample': a random sample from the model.
                  - 'pred_xstart': a prediction of x_0.
         """
+        print("p_sample")
         out = self.p_mean_variance(
             model,
             x,
@@ -569,6 +576,7 @@ class GaussianDiffusion:
                  - 'sample': a random sample from the model.
                  - 'pred_xstart': a prediction of x_0.
         """
+        print("p_sample_with_grad")
         with th.enable_grad():
             x = x.detach().requires_grad_()
             out = self.p_mean_variance(
@@ -608,6 +616,7 @@ class GaussianDiffusion:
         dump_steps=None,
         const_noise=False,
     ):
+        print("p_sample_loop")
         final = None
         if dump_steps is not None:
             dump = []
@@ -698,29 +707,15 @@ class GaussianDiffusion:
     def p_sample_loop_onnx(
         self,
         model,
-        batch_size=None,
-        njoints=None,
-        nfeats=None,
-        n_frames=None,
-        noise=None,
-        clip_denoised=True,
-        denoised_fn=None,
-        cond_fn=None,
-        mask=None,
-        lengths=None,
-        text=None,
-        tokens=None,
-        scale=None,
-        enc_text=None,
-        text_mask=None,
-        device=None,
-        progress=False,
-        skip_timesteps=0,
-        init_image=None,
-        randomize_class=False,
-        cond_fn_with_grad=False,
-        dump_steps=None,
-        const_noise=False,
+        batch_size: th.Tensor,
+        njoints: th.Tensor,
+        nfeats: th.Tensor,
+        n_frames: th.Tensor,
+        mask: th.Tensor,
+        lengths: th.Tensor,
+        scale: th.Tensor,
+        enc_text: th.Tensor,
+        text_mask: th.Tensor,
     ):
         """
         Generate samples from the model.
@@ -742,6 +737,25 @@ class GaussianDiffusion:
         :param const_noise: If True, will noise all samples with the same noise throughout sampling
         :return: a non-differentiable batch of samples.
         """
+        tokens=None
+        text=None
+        noise=None
+        clip_denoised=True
+        denoised_fn=None
+        cond_fn=None
+        device=None
+        progress=False
+        skip_timesteps=0
+        init_image=None
+        randomize_class=False
+        cond_fn_with_grad=False
+        dump_steps=None
+        const_noise=False
+        print("p_sample_loop_onnx")
+        print(f"batch_size: {batch_size}, njoints: {njoints}, nfeats: {nfeats}, n_frames: {n_frames}")
+        print(f"noise: {noise}, clip_denoised: {clip_denoised}, denoised_fn: {denoised_fn}, cond_fn: {cond_fn}")
+        print(f"mask: {mask}, lengths: {lengths}, text: {text}, tokens: {tokens}, scale: {scale}")
+        print(f"enc_text: {enc_text}, text_mask: {text_mask}, device: {device}")
         model_kwargs = {'y': {
             'mask': mask, 
             'lengths': lengths, 
@@ -751,39 +765,25 @@ class GaussianDiffusion:
             'text_embed': (enc_text, text_mask)
             }
         }
-        shape = (batch_size, njoints, nfeats, n_frames)
-
-        if device is None:
-            device = next(model.parameters()).device
-        assert isinstance(shape, (tuple, list))
-        if noise is not None:
-            img = noise
-        else:
-            img = th.randn(*shape, device=device)
-
-        if skip_timesteps and init_image is None:
-            init_image = th.zeros_like(img)
-
-        indices = list(range(self.num_timesteps - skip_timesteps))[::-1]
-
-        if init_image is not None:
-            my_t = th.ones([shape[0]], device=device, dtype=th.long) * indices[0]
-            img = self.q_sample(init_image, my_t, img)
-
-        sample_fn = self.p_sample
-        sample_fn_lbd = lambda x, t: sample_fn(model, x, t, clip_denoised, denoised_fn, cond_fn, model_kwargs, const_noise)
-
-        img = GaussianDiffusion.p_sample_loop_jit(indices, img, sample_fn_lbd)
-        return img
-
-    @staticmethod
-    @torch.jit.script
-    def p_sample_loop_jit(indices: List[int], img: torch.Tensor, sample_fn_lbd: Callable):
-        for i in indices:
-            t = th.tensor([i] * img.shape[0], device=img.device)
-            out = sample_fn_lbd(img, t)
-            img = out["sample"]
-        return img
+        shape = (batch_size[0], njoints[0], nfeats[0], n_frames[0])
+        print(f"shape: {shape}")
+        return self._p_sample_loop(
+            model,
+            shape,
+            noise,
+            clip_denoised,
+            denoised_fn,
+            cond_fn,
+            model_kwargs,
+            device,
+            progress,
+            skip_timesteps,
+            init_image,
+            randomize_class,
+            cond_fn_with_grad,
+            dump_steps,
+            const_noise,
+        )
 
     def p_sample_loop_progressive(
         self,
@@ -802,6 +802,7 @@ class GaussianDiffusion:
         cond_fn_with_grad=False,
         const_noise=False,
     ):
+        print("p_sample_loop_progressive")
         """
         Generate samples from the model and yield intermediate samples from
         each timestep of diffusion.

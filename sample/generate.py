@@ -8,7 +8,7 @@ import os
 import numpy as np
 import torch
 from utils.parser_util import generate_args
-from utils.model_util import create_model_and_diffusion, load_saved_model
+from utils.model_util import load_saved_model
 from utils import dist_util
 from utils.sampler_util import ClassifierFreeSampleModel, AutoRegressiveSampler
 from data_loaders.get_data import get_dataset_loader
@@ -18,15 +18,12 @@ from data_loaders.humanml.utils.plot_script import plot_3d_motion
 import shutil
 from data_loaders.tensors import collate
 from moviepy.editor import clips_array
+from model.mdm import MDM
+from utils.model_util import get_model_args, create_gaussian_diffusion
 
-def load_model_and_diffusion(args, data, n_frames):
+def load_model_and_diffusion(args, data, n_frames, onnx=False):
     print("Creating model and diffusion...")
-    model, diffusion = create_model_and_diffusion(args, data)
-
-    sample_fn = diffusion.p_sample_loop
-    if args.autoregressive:
-        sample_cls = AutoRegressiveSampler(args, sample_fn, n_frames)
-        sample_fn = sample_cls.sample
+    model = MDM(**get_model_args(args, data))
 
     print(f"Loading checkpoints from [{args.model_path}]...")
     load_saved_model(model, args.model_path, use_avg=args.use_ema)
@@ -35,6 +32,12 @@ def load_model_and_diffusion(args, data, n_frames):
         model = ClassifierFreeSampleModel(model)   # wrapping model with the classifier-free sampler
     model.to(dist_util.dev())
     model.eval()  # disable random masking
+
+    diffusion = create_gaussian_diffusion(args, onnx=onnx, model=model)
+    sample_fn = diffusion.p_sample_loop
+    if args.autoregressive:
+        sample_cls = AutoRegressiveSampler(args, sample_fn, n_frames)
+        sample_fn = sample_cls.sample
 
     motion_shape = (args.batch_size, model.njoints, model.nfeats, n_frames)
     return model, diffusion, motion_shape, sample_fn
