@@ -23,54 +23,107 @@ torch.onnx.register_custom_op_symbolic(
     1  # since opset 1
 )
 
-class MDMOnnxWrapper(nn.Module):
-    def __init__(self, mdm_model, sample_fn, diffusion):
-        super().__init__()
-        self.model = mdm_model
-        self.model.forward = self.model.forward_onnx
-        if sample_fn == diffusion.p_sample_loop:
-            self.sample_fn = diffusion.p_sample_loop_onnx
-        else:
-            raise ValueError("Unsupported sample function {}.".format(sample_fn))
+# class MDMOnnxWrapper(nn.Module):
+#     def __init__(self, mdm_model, sample_fn, diffusion):
+#         super().__init__()
+#         self.model = mdm_model
+#         self.model.forward = self.model.forward_onnx
+#         if sample_fn == diffusion.p_sample_loop:
+#             self.sample_fn = diffusion.p_sample_loop_onnx
+#         else:
+#             raise ValueError("Unsupported sample function {}.".format(sample_fn))
 
-    def forward(self, 
-                batch_size=None,
-                njoints=None,
-                nfeats=None,
-                n_frames=None, 
-                mask=None,
-                lengths=None,
-                scale=None,
-                enc_text=None,
-                text_mask=None
-        ):
-        """Single denoising step that can be exported to ONNX
-        """
-        init_image = None
-        sample = self.sample_fn(
-            self.model,
-            batch_size,
-            njoints,
-            nfeats,
-            n_frames,
-            clip_denoised=False,
-            mask=mask,
-            lengths=lengths,
-            scale=scale,
-            enc_text=enc_text,
-            text_mask=text_mask,
-            skip_timesteps=0,  # 0 is the default value - i.e. don't skip any step
-            init_image=init_image,
-            progress=True,
-            dump_steps=None,
-            noise=None,
-            const_noise=False,
+#     def forward(self, 
+#                 batch_size=None,
+#                 njoints=None,
+#                 nfeats=None,
+#                 n_frames=None, 
+#                 mask=None,
+#                 lengths=None,
+#                 scale=None,
+#                 enc_text=None,
+#                 text_mask=None
+#         ):
+#         """Single denoising step that can be exported to ONNX
+#         """
+#         init_image = None
+#         sample = self.sample_fn(
+#             self.model,
+#             batch_size,
+#             njoints,
+#             nfeats,
+#             n_frames,
+#             clip_denoised=False,
+#             mask=mask,
+#             lengths=lengths,
+#             scale=scale,
+#             enc_text=enc_text,
+#             text_mask=text_mask,
+#             skip_timesteps=0,  # 0 is the default value - i.e. don't skip any step
+#             init_image=init_image,
+#             progress=True,
+#             dump_steps=None,
+#             noise=None,
+#             const_noise=False,
+#         )
+#         return sample
+
+# def export_mdm_to_onnx(model, sample_fn, diffusion, save_path, motion_shape, mask, lengths, scale, enc_text, text_mask):
+#     wrapper = torch.jit.script(MDMOnnxWrapper(model, sample_fn, diffusion))
+#     wrapper.eval()
+    
+#     batch_size, njoints, nfeats, n_frames = motion_shape
+#     batch_size = torch.tensor([batch_size]).to(dist_util.dev())
+#     njoints = torch.tensor([njoints]).to(dist_util.dev())
+#     nfeats = torch.tensor([nfeats]).to(dist_util.dev())
+#     n_frames = torch.tensor([n_frames]).to(dist_util.dev())
+#     dummy_input = (batch_size, njoints, nfeats, n_frames, mask, lengths, scale, enc_text, text_mask)
+
+#     torch.onnx.export(
+#         wrapper,
+#         dummy_input,
+#         save_path,
+#         input_names=['batch_size', 'njoints', 'nfeats', 'n_frames', 
+#                      'mask', 'lengths', 'scale', 'enc_text', 'text_mask'],
+#         output_names=['output'],
+#         dynamic_axes={
+#             'mask': {0: 'batch_size', 3: 'n_frames'},
+#             'enc_text': {0: 'sequence_length'},
+#             'text_mask': {1: 'sequence_length'}
+#         },
+#         opset_version=17,
+#         verbose=False
+#     )
+
+class MDMONNXWrapper(nn.Module):
+    def __init__(self, diffusion):
+        super().__init__()
+        self.diffusion = diffusion
+
+    def forward(self, batch_size, njoints, nfeats, n_frames, mask, lengths, scale, enc_text, text_mask):
+        # Reconstruct model_kwargs
+        model_kwargs = {
+            'y': {
+                'mask': mask,
+                'lengths': lengths,
+                'scale': scale,
+                'text_embed': (enc_text, text_mask)
+            }
+        }
+        
+        # Create motion shape
+        motion_shape = (batch_size, njoints, nfeats, n_frames)
+        
+        # Sample motion
+        sample = self.diffusion(
+            *motion_shape,
+            **model_kwargs,
         )
+        
         return sample
 
-def export_mdm_to_onnx(model, sample_fn, diffusion, save_path, motion_shape, mask, lengths, scale, enc_text, text_mask):
-    wrapper = MDMOnnxWrapper(model, sample_fn, diffusion)
-    wrapper.eval()
+def export_mdm_to_onnx(diffusion_wrapper, save_path, motion_shape, mask, lengths, scale, enc_text, text_mask):
+    wrapper = torch.jit.script(MDMONNXWrapper(diffusion_wrapper))
     
     batch_size, njoints, nfeats, n_frames = motion_shape
     batch_size = torch.tensor([batch_size]).to(dist_util.dev())
@@ -107,7 +160,9 @@ def main(args=None):
     dist_util.setup_dist(args.device)
     texts, action_text, n_frames, max_frames, fps = load_text(args)
     args.batch_size = args.num_samples  # Sampling a single batch from the testset, with exactly args.num_samples
-    model, diffusion, motion_shape, sample_fn = load_model_and_diffusion(args, data=None, n_frames=n_frames)
+    print("Loading model and diffusion...")
+    model, diffusion, motion_shape, sample_fn = load_model_and_diffusion(args, data=None, n_frames=n_frames, onnx=True)
+    print("Successfully loaded model and diffusion!")
 
     scale = torch.ones(args.batch_size, device=dist_util.dev()) * args.guidance_param
 
@@ -128,7 +183,7 @@ def main(args=None):
     print(f"Dummy input shape: {[i.shape for i in dummy_input]}")
 
     export_path = args.model_path.replace('.pt', '_onnx.onnx')
-    export_mdm_to_onnx(model, sample_fn, diffusion, export_path, motion_shape, 
+    export_mdm_to_onnx(diffusion, export_path, motion_shape, 
                        y['mask'], y['lengths'], y['scale'], y['text_embed'][0], y['text_embed'][1])
     print(f"Exported model to {export_path}")
 
