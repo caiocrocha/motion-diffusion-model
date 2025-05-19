@@ -716,6 +716,20 @@ class GaussianDiffusion(nn.Module):
         scale: th.Tensor,
         enc_text: th.Tensor,
         text_mask: th.Tensor,
+        tokens=None,
+        text=None,
+        noise=None,
+        clip_denoised=True,
+        denoised_fn=None,
+        cond_fn=None,
+        device=None,
+        progress=False,
+        skip_timesteps=0,
+        init_image=None,
+        randomize_class=False,
+        cond_fn_with_grad=False,
+        dump_steps=None,
+        const_noise=False,
     ):
         """
         Generate samples from the model.
@@ -737,20 +751,6 @@ class GaussianDiffusion(nn.Module):
         :param const_noise: If True, will noise all samples with the same noise throughout sampling
         :return: a non-differentiable batch of samples.
         """
-        tokens=None
-        text=None
-        noise=None
-        clip_denoised=True
-        denoised_fn=None
-        cond_fn=None
-        device=None
-        progress=False
-        skip_timesteps=0
-        init_image=None
-        randomize_class=False
-        cond_fn_with_grad=False
-        dump_steps=None
-        const_noise=False
         print("p_sample_loop_onnx")
         print(f"batch_size: {batch_size}, njoints: {njoints}, nfeats: {nfeats}, n_frames: {n_frames}")
         print(f"noise: {noise}, clip_denoised: {clip_denoised}, denoised_fn: {denoised_fn}, cond_fn: {cond_fn}")

@@ -90,17 +90,29 @@ class SpacedDiffusion(GaussianDiffusion):
     def p_mean_variance(
         self, model, *args, **kwargs
     ):  # pylint: disable=signature-differs
+        print("-----------p_mean_variance SpacedDiffusion-----------")
+        print("args:", args)
+        print("kwargs:", kwargs)
         return super().p_mean_variance(self._wrap_model(model), *args, **kwargs)
 
     def training_losses(
         self, model, *args, **kwargs
     ):  # pylint: disable=signature-differs
+        print("-----------training_losses SpacedDiffusion-----------")
+        print("args:", args)
+        print("kwargs:", kwargs)
         return super().training_losses(self._wrap_model(model), *args, **kwargs)
 
     def condition_mean(self, cond_fn, *args, **kwargs):
+        print("-----------condition_mean SpacedDiffusion-----------")
+        print("args:", args)
+        print("kwargs:", kwargs)
         return super().condition_mean(self._wrap_model(cond_fn), *args, **kwargs)
 
     def condition_score(self, cond_fn, *args, **kwargs):
+        print("-----------condition_score SpacedDiffusion-----------")
+        print("args:", args)
+        print("kwargs:", kwargs)
         return super().condition_score(self._wrap_model(cond_fn), *args, **kwargs)
 
     def _wrap_model(self, model):
@@ -133,18 +145,25 @@ class SpacedDiffusionONNX(SpacedDiffusion):
         print("Called super().__init__")
         self.model = model
         self.model.forward = self.model.forward_onnx
-    
-    def forward(self, *args, **kwargs):
+
+    def forward(self, batch_size, njoints, nfeats, n_frames, mask, lengths, scale, enc_text, text_mask):
         print("-----------FORWARD SpacedDiffusionONNX-----------")
-        print(f"args: {args}")
-        print(f"kwargs: {kwargs}")
+        args = ()
+        kwargs = {'batch_size': batch_size, 'njoints': njoints, 'nfeats': nfeats, 'n_frames': n_frames,
+            'mask': mask, 'lengths': lengths, 'scale': scale, 'enc_text': enc_text, 'text_mask': text_mask}
         return self.p_sample_loop_onnx(self._wrap_model(self.model), *args, **kwargs)
 
     def p_mean_variance(
-        self, *args, **kwargs
+        self, x, ts, clip_denoised, denoised_fn, mask, lengths, scale, enc_text, text_mask
         
     ):  # pylint: disable=signature-differs
         print("-----------p_mean_variance SpacedDiffusionONNX-----------")
+        args = (x, ts)
+        kwargs = {'clip_denoised': clip_denoised, 'denoised_fn': denoised_fn, 
+                  'y': {
+                      'mask': mask, 'lengths': lengths, 'scale': scale, 'text_embed': (enc_text, text_mask)
+                    }
+                }
         print(f"args: {args}")
         print(f"kwargs: {kwargs}")
         return super().p_mean_variance(*args, **kwargs)
@@ -160,6 +179,13 @@ class SpacedDiffusionONNX(SpacedDiffusion):
     def condition_score(self, *args, **kwargs):
         return super().condition_score(self._wrap_model(self.model), *args, **kwargs)
 
+    def _wrap_model(self, model):
+        if isinstance(model, _WrappedModelONNX):
+            return model
+        return _WrappedModelONNX(
+            model, self.timestep_map, self.rescale_timesteps, self.original_num_steps
+        )
+
 class _WrappedModel:
     def __init__(self, model, timestep_map, rescale_timesteps, original_num_steps):
         self.model = model
@@ -168,7 +194,6 @@ class _WrappedModel:
         self.original_num_steps = original_num_steps
 
     def __call__(self, x, ts, **kwargs):
-        print("Calling _WrappedModel")
         map_tensor = th.tensor(self.timestep_map, device=ts.device, dtype=ts.dtype)
         new_ts = map_tensor[ts]
         if self.rescale_timesteps:
@@ -178,3 +203,8 @@ class _WrappedModel:
     def __getattr__(self, name, default=None):
         # this method is reached only if name is not in self.__dict__.
         return wrapped_getattr(self, name, default)
+
+class _WrappedModelONNX(_WrappedModel):
+    def __call__(self, x, ts, y=None):
+        # kwargs = {'y': {'mask': mask, 'lengths': lengths, 'scale': scale, 'text_embed': (enc_text, text_mask)}}
+        return super().__call__(x, ts, y=y)

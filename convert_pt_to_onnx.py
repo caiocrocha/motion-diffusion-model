@@ -101,29 +101,42 @@ class MDMONNXWrapper(nn.Module):
         self.diffusion = diffusion
 
     def forward(self, batch_size, njoints, nfeats, n_frames, mask, lengths, scale, enc_text, text_mask):
-        # Reconstruct model_kwargs
-        model_kwargs = {
-            'y': {
-                'mask': mask,
-                'lengths': lengths,
-                'scale': scale,
-                'text_embed': (enc_text, text_mask)
-            }
-        }
+        # # Create motion shape
+        # motion_shape = (batch_size, njoints, nfeats, n_frames)
+
+        # # Reconstruct model_kwargs
+        # model_kwargs = {
+        #     'y': {
+        #         'mask': mask,
+        #         'lengths': lengths,
+        #         'scale': scale,
+        #         'text_embed': (enc_text, text_mask)
+        #     }
+        # }
         
-        # Create motion shape
-        motion_shape = (batch_size, njoints, nfeats, n_frames)
-        
-        # Sample motion
+        # # Sample motion
+        # sample = self.diffusion(
+        #     *motion_shape,
+        #     **model_kwargs,
+        # )
+
         sample = self.diffusion(
-            *motion_shape,
-            **model_kwargs,
+            batch_size=batch_size,
+            njoints=njoints,
+            nfeats=nfeats,
+            n_frames=n_frames,
+            mask=mask,
+            lengths=lengths,
+            scale=scale,
+            enc_text=enc_text,
+            text_mask=text_mask
         )
         
         return sample
 
 def export_mdm_to_onnx(diffusion_wrapper, save_path, motion_shape, mask, lengths, scale, enc_text, text_mask):
     wrapper = torch.jit.script(MDMONNXWrapper(diffusion_wrapper))
+    # wrapper = MDMONNXWrapper(diffusion_wrapper)
     
     batch_size, njoints, nfeats, n_frames = motion_shape
     batch_size = torch.tensor([batch_size]).to(dist_util.dev())
@@ -162,7 +175,7 @@ def main(args=None):
     args.batch_size = args.num_samples  # Sampling a single batch from the testset, with exactly args.num_samples
     print("Loading model and diffusion...")
     model, diffusion, motion_shape, sample_fn = load_model_and_diffusion(args, data=None, n_frames=n_frames, onnx=True)
-    print("Successfully loaded model and diffusion!")
+    print("Loaded both")
 
     scale = torch.ones(args.batch_size, device=dist_util.dev()) * args.guidance_param
 
@@ -183,6 +196,8 @@ def main(args=None):
     print(f"Dummy input shape: {[i.shape for i in dummy_input]}")
 
     export_path = args.model_path.replace('.pt', '_onnx.onnx')
+    # export_mdm_to_onnx(model, sample_fn, diffusion, export_path, motion_shape, 
+    #                    y['mask'], y['lengths'], y['scale'], y['text_embed'][0], y['text_embed'][1])
     export_mdm_to_onnx(diffusion, export_path, motion_shape, 
                        y['mask'], y['lengths'], y['scale'], y['text_embed'][0], y['text_embed'][1])
     print(f"Exported model to {export_path}")
